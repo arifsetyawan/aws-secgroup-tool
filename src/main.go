@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
@@ -39,84 +41,10 @@ func main() {
 		mods("remove", *removeGroupId, "")
 	case "list":
 		list()
-	case "set":
-
-		// Get Current User
-		//usr, err := user.Current()
-		//if err != nil {
-		//	fmt.Errorf("%v", err)
-		//}
-		//
-		//viper.SetConfigName("config") // name of config file (without extension)
-		//viper.AddConfigPath(usr.HomeDir+"/.awsstsgen/")
-		//err = viper.ReadInConfig()
-		//if err != nil {
-		//	panic(fmt.Errorf("Fatal error config file: %s \n", err))
-		//}
-		//
-		//var mfaToken string
-		//
-		//// Get token prompt
-		//fmt.Print("Please input current MFA token: ")
-		//_, err = fmt.Scanln(&mfaToken)
-		//if err != nil {
-		//	panic("Require MFA Token")
-		//}
-		//
-		//result, err := requestStsCredential(mfaToken, viper.Get("mfa-arn").(string), viper.Get("base-profile").(string))
-		//if err != nil {
-		//	fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		//	os.Exit(1)
-		//}
-		//
-		//json.Unmarshal(result.([]byte), &theRes)
-		//
-		//credentials := theRes["Credentials"].(map[string]interface{})
-		//accessKey := credentials["AccessKeyId"].(string)
-		//secretKey := credentials["SecretAccessKey"].(string)
-		//sessionToken := credentials["SessionToken"].(string)
-		//
-		//profile := viper.Get("target-profile").(string)
-		//
-		//fmt.Println("accessKey: "+accessKey)
-		//fmt.Println("secretKey: "+secretKey)
-		//fmt.Println("sessionToken: "+sessionToken)
-		//
-		//if configureLocalCredential(accessKey, secretKey, sessionToken, profile) == true {
-		//	fmt.Println("\nCREDENTIAL UPDATED")
-		//}
+	case "white":
+		performWitelisting()
 	}
 
-}
-
-func requestStsCredential(token string, serial string, baseProfile string) (interface{}, error) {
-	binary, lookErr := exec.LookPath("aws")
-	if lookErr != nil {
-		return nil, lookErr
-	}
-
-	cmd := exec.Command(binary, "sts", "get-session-token", "--serial-number", serial, "--token-code", token, "--duration-seconds", "129600", "--profile", baseProfile)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func configureLocalCredential(accessKey string, secretKey string, sessionToken string, profile string) bool {
-	binary, lookErr := exec.LookPath("aws")
-	if lookErr != nil {
-		return false
-	}
-	_, err := exec.Command(binary, "configure", "set", "aws_access_key_id", accessKey, "--profile", profile).CombinedOutput()
-	_, err = exec.Command(binary, "configure", "set", "aws_secret_access_key", secretKey, "--profile", profile).CombinedOutput()
-	_, err = exec.Command(binary, "configure", "set", "aws_session_token", sessionToken, "--profile", profile).CombinedOutput()
-	if err != nil {
-		_ = fmt.Errorf("Error Execute aws configure ", err)
-		return false
-	}
-
-	return true
 }
 
 func mods(action string, groupId string, profile string) {
@@ -126,25 +54,8 @@ func mods(action string, groupId string, profile string) {
 		_, _ =fmt.Fprintln(os.Stderr, "group id must not empty")
 	}
 
-	usr, err := user.Current()
-	if err != nil {
-		_ = fmt.Errorf("%v", err)
-		return
-	}
-
-	if _, err := os.Stat(usr.HomeDir+"/.awssecgroup/"); os.IsNotExist(err) {
-		_ = os.Mkdir(usr.HomeDir+"/.awssecgroup", 0777)
-	} else {
-
-		jsonFile, err := os.Open(usr.HomeDir+"/.awssecgroup/groupList.json")
-		if err != nil {
-			_ = fmt.Errorf("%v", err)
-		} else {
-			byteValue, _ := ioutil.ReadAll(jsonFile)
-			_  = json.Unmarshal(byteValue, &listOfGroupIds)
-			defer jsonFile.Close()
-		}
-	}
+	byteValue, _ := getFileContent("groupList.json")
+	_  = json.Unmarshal(byteValue, &listOfGroupIds)
 
 	if action == "save" {
 		listOfGroupIds = append(listOfGroupIds, SecGrp{GroupId:groupId, Profile:profile})
@@ -167,8 +78,7 @@ func mods(action string, groupId string, profile string) {
 	}
 
 	preparedNewList, _ := json.Marshal(listOfGroupIds)
-
-	errSaveNewList := ioutil.WriteFile(usr.HomeDir+"/.awssecgroup/groupList.json", preparedNewList, 0644)
+	errSaveNewList := writeFileContent("groupList.json", preparedNewList)
 	if errSaveNewList != nil {
 		_ = fmt.Errorf("%v", errSaveNewList)
 		panic(errSaveNewList)
@@ -180,40 +90,93 @@ func mods(action string, groupId string, profile string) {
 
 }
 
-func list() {
+func list() ListOfSecGrp {
+	var listOfGroup ListOfSecGrp
 
-	var listOfGroupIds ListOfSecGrp
+	byteValue, _ := getFileContent("groupList.json")
+	_  = json.Unmarshal(byteValue, &listOfGroup)
 
+	if len(listOfGroup) == 0 {
+		fmt.Println("No List")
+		return ListOfSecGrp{}
+	}
+
+	for _, group := range listOfGroup {
+		fmt.Println("gid:",group.GroupId,"profile:", group.Profile)
+	}
+	return listOfGroup
+}
+
+func performWitelisting() bool {
+	var err error
+
+	binary, lookErr := exec.LookPath("aws")
+	if lookErr != nil {
+		return false
+	}
+
+	res, _ := http.Get("https://api.ipify.org")
+	ip, _ := ioutil.ReadAll(res.Body)
+
+	fmt.Println("current ip:", string(ip))
+	lastIp := getLastSavedIp()
+
+	for _, group := range list() {
+		if lastIp != "" {
+			_, err = exec.Command(binary, "ec2","revoke-security-group-ingress", "--group-id", group.GroupId, "--protocol", "tcp", "--port" ,"22", "--cidr", string(ip)+"/32","--profile", group.Profile).CombinedOutput()
+		}
+		_, err = exec.Command(binary, "ec2", "authorize-security-group-ingress", "--group-id", group.GroupId, "--protocol", "tcp", "--port" ,"22", "--cidr", string(ip)+"/32","--profile", group.Profile).CombinedOutput()
+		if err != nil {
+			fmt.Println("error cmd", err)
+		}
+	}
+
+	if err != nil {
+		_ = fmt.Errorf("Error Execute aws configure ", err)
+		return false
+	}
+
+	errorWrite := writeFileContent("lastIp", []byte(ip))
+	if errorWrite != nil {
+		_ = fmt.Errorf("%v", errorWrite)
+		return false
+	}
+
+	return true
+}
+
+func getLastSavedIp() string {
+	byteValue, _ := getFileContent("lastIp")
+	addr := net.ParseIP(string(byteValue))
+	if addr == nil {
+		return ""
+	}
+	return addr.String()
+}
+
+func getFileContent(filename string) ([]byte, error) {
 	usr, err := user.Current()
 	if err != nil {
 		_ = fmt.Errorf("%v", err)
 	}
-
 	if _, err := os.Stat(usr.HomeDir+"/.awssecgroup/"); os.IsNotExist(err) {
 		_ = os.Mkdir(usr.HomeDir+"/.awssecgroup", 0777)
-		fmt.Println("No List")
 	}
-
-	jsonFile, err := os.Open(usr.HomeDir+"/.awssecgroup/groupList.json")
+	theFile, err := os.Open(usr.HomeDir+"/.awssecgroup/"+filename)
 	if err != nil {
-		fmt.Println("No List")
-		return
+		return nil, err
 	}
+	defer theFile.Close()
+	return ioutil.ReadAll(theFile)
+}
 
-	defer jsonFile.Close()
-
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-	_  = json.Unmarshal(byteValue, &listOfGroupIds)
-
-	if len(listOfGroupIds) == 0 {
-		fmt.Println("No List")
-		return
+func writeFileContent(filename string, content []byte) error {
+	usr, err := user.Current()
+	if err != nil {
+		_ = fmt.Errorf("%v", err)
 	}
-
-	for _, group := range listOfGroupIds {
-		fmt.Println("gid:",group.GroupId,"profile:", group.Profile)
+	if _, err := os.Stat(usr.HomeDir+"/.awssecgroup/"); os.IsNotExist(err) {
+		_ = os.Mkdir(usr.HomeDir+"/.awssecgroup", 0777)
 	}
-	return
-
-
+	return ioutil.WriteFile(usr.HomeDir+"/.awssecgroup/"+filename, content, 0644)
 }
