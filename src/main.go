@@ -15,6 +15,7 @@ import (
 type SecGrp struct {
 	GroupId string `json:"groupId"`
 	Profile string `json:"profile"`
+	Description string `json:"description"`
 }
 
 type ListOfSecGrp []SecGrp
@@ -24,6 +25,7 @@ func main() {
 	saveCmd := flag.NewFlagSet("save", flag.ExitOnError)
 	saveGroupId := saveCmd.String("gid", "", "-gid=<your_group_id>")
 	saveProfile := saveCmd.String("profile", "", "-profile=<your_group_id>")
+	description := saveCmd.String("description", "", "-description=<your role description>")
 
 	removeCmd := flag.NewFlagSet("remove", flag.ExitOnError)
 	removeGroupId := removeCmd.String("gid", "", "-gid=<your_group_id>")
@@ -35,10 +37,18 @@ func main() {
 	switch os.Args[1] {
 	case "save":
 		saveCmd.Parse(os.Args[2:])
-		mods("save", *saveGroupId, *saveProfile)
+		params := SecGrp{
+			GroupId:*saveGroupId,
+			Profile:*saveProfile,
+			Description:*description,
+		}
+		mods("save", params)
 	case "remove":
 		removeCmd.Parse(os.Args[2:])
-		mods("remove", *removeGroupId, "")
+		params := SecGrp{
+			GroupId:*removeGroupId,
+		}
+		mods("remove", params)
 	case "list":
 		list()
 	case "white":
@@ -47,10 +57,10 @@ func main() {
 
 }
 
-func mods(action string, groupId string, profile string) {
+func mods(action string, params SecGrp) {
 	var listOfGroupIds ListOfSecGrp
 
-	if groupId == "" {
+	if params.GroupId == "" {
 		_, _ =fmt.Fprintln(os.Stderr, "group id must not empty")
 	}
 
@@ -58,13 +68,13 @@ func mods(action string, groupId string, profile string) {
 	_  = json.Unmarshal(byteValue, &listOfGroupIds)
 
 	if action == "save" {
-		listOfGroupIds = append(listOfGroupIds, SecGrp{GroupId:groupId, Profile:profile})
+		listOfGroupIds = append(listOfGroupIds, params)
 	}
 
 	if action == "remove" {
 		var newListOfGroupIds ListOfSecGrp
 		for _, val := range listOfGroupIds {
-			if val.GroupId != groupId {
+			if val.GroupId != params.GroupId {
 				newListOfGroupIds = append(newListOfGroupIds, val)
 			}
 		}
@@ -84,7 +94,7 @@ func mods(action string, groupId string, profile string) {
 		panic(errSaveNewList)
 	}
 
-	fmt.Println(action+" "+groupId+" success")
+	fmt.Println(action+" "+params.GroupId+" success")
 
 	list()
 
@@ -123,9 +133,9 @@ func performWitelisting() bool {
 
 	for _, group := range list() {
 		if lastIp != "" {
-			_, err = exec.Command(binary, "ec2","revoke-security-group-ingress", "--group-id", group.GroupId, "--protocol", "tcp", "--port" ,"22", "--cidr", string(ip)+"/32","--profile", group.Profile).CombinedOutput()
+			_, err = exec.Command(binary, "ec2","revoke-security-group-ingress", "--group-id", group.GroupId, `--ip-permissions","IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges='[{CidrIp="`+string(ip)+`"/32,Description="`+group.Description+`"}]'`,"--profile", group.Profile).CombinedOutput()
 		}
-		_, err = exec.Command(binary, "ec2", "authorize-security-group-ingress", "--group-id", group.GroupId, "--protocol", "tcp", "--port" ,"22", "--cidr", string(ip)+"/32","--profile", group.Profile).CombinedOutput()
+		_, err = exec.Command(binary, "ec2", "authorize-security-group-ingress", "--group-id", group.GroupId, `--ip-permissions","IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges='[{CidrIp="`+string(ip)+`"/32,Description="`+group.Description+`"}]'`,"--profile", group.Profile).CombinedOutput()
 		if err != nil {
 			fmt.Println("error cmd", err)
 		}
