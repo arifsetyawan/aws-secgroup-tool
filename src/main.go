@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -37,6 +38,13 @@ func main() {
 	switch os.Args[1] {
 	case "save":
 		saveCmd.Parse(os.Args[2:])
+
+		if saveGroupId == nil || saveProfile == nil || description == nil {
+			fmt.Errorf("%v", "param not complete")
+			break
+			return
+		}
+
 		params := SecGrp{
 			GroupId:*saveGroupId,
 			Profile:*saveProfile,
@@ -62,6 +70,7 @@ func mods(action string, params SecGrp) {
 
 	if params.GroupId == "" {
 		_, _ =fmt.Fprintln(os.Stderr, "group id must not empty")
+		return
 	}
 
 	byteValue, _ := getFileContent("groupList.json")
@@ -112,13 +121,15 @@ func list() ListOfSecGrp {
 	}
 
 	for _, group := range listOfGroup {
-		fmt.Println("gid:",group.GroupId,"profile:", group.Profile)
+		fmt.Println("gid:",group.GroupId,"profile:", group.Profile,"description:",group.Description)
 	}
 	return listOfGroup
 }
 
 func performWitelisting() bool {
 	var err error
+	var out bytes.Buffer
+	var stderr bytes.Buffer
 
 	binary, lookErr := exec.LookPath("aws")
 	if lookErr != nil {
@@ -130,14 +141,24 @@ func performWitelisting() bool {
 
 	fmt.Println("current ip:", string(ip))
 	lastIp := getLastSavedIp()
+	fmt.Println("last ip:", lastIp)
 
 	for _, group := range list() {
 		if lastIp != "" {
-			_, err = exec.Command(binary, "ec2","revoke-security-group-ingress", "--group-id", group.GroupId, `--ip-permissions","IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges='[{CidrIp="`+string(ip)+`"/32,Description="`+group.Description+`"}]'`,"--profile", group.Profile).CombinedOutput()
+			revokeCmd := exec.Command(binary, "ec2","revoke-security-group-ingress", "--group-id", group.GroupId, "--ip-permissions", permissionString(lastIp, group.Description),"--profile", group.Profile)
+			revokeCmd.Stdout = &out
+			revokeCmd.Stderr = &stderr
+			err := revokeCmd.Run()
+			if err != nil {
+				fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
+			}
 		}
-		_, err = exec.Command(binary, "ec2", "authorize-security-group-ingress", "--group-id", group.GroupId, `--ip-permissions","IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges='[{CidrIp="`+string(ip)+`"/32,Description="`+group.Description+`"}]'`,"--profile", group.Profile).CombinedOutput()
+		authCmd := exec.Command(binary, "ec2", "authorize-security-group-ingress", "--group-id", group.GroupId, "--ip-permissions",permissionString(string(ip), group.Description),"--profile", group.Profile)
+		authCmd.Stdout = &out
+		authCmd.Stderr = &stderr
+		err := authCmd.Run()
 		if err != nil {
-			fmt.Println("error cmd", err)
+			fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
 		}
 	}
 
@@ -157,7 +178,9 @@ func performWitelisting() bool {
 
 func getLastSavedIp() string {
 	byteValue, _ := getFileContent("lastIp")
+	fmt.Println("addBytVal", string(byteValue))
 	addr := net.ParseIP(string(byteValue))
+	fmt.Println("addr", addr)
 	if addr == nil {
 		return ""
 	}
@@ -189,4 +212,8 @@ func writeFileContent(filename string, content []byte) error {
 		_ = os.Mkdir(usr.HomeDir+"/.awssecgroup", 0777)
 	}
 	return ioutil.WriteFile(usr.HomeDir+"/.awssecgroup/"+filename, content, 0644)
+}
+
+func permissionString(ip string, desc string) string {
+	return fmt.Sprint("IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=",string(ip),"/32,Description=",desc,"}]")
 }
